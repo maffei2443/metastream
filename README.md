@@ -1,5 +1,9 @@
 # metastream
-A library implementing frameworks for algorithm selecion in DataStreams, namely [MetaStream][mstream], [MicroMetasream][mmstream] and [BLAST][blast].
+A library implementing frameworks for algorithm selecion in DataStreams, namely
+
+1. [MetaStream][mstream]
+2. [MicroMetasream][mmstream]
+3. [BLAST][blast]
 
 
 ## Referências
