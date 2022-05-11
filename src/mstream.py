@@ -1,13 +1,10 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-import functools as F
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import mean_squared_error
 from skmultiflow.data import DataStream
 from collections import Counter
+from typing import List
 
 import src.aux as A
 import src.aux as A
@@ -32,70 +29,23 @@ class MetaStream(base.MStream):
         self._processed_online = 0
         self._cache_predict_multi = []
 
-    def _gen_meta_label(self, stream: DataStream, metabase_initial_size, train, horizon, test=10,
-                        verbose=True, retrain_interval=None, **kwargs):
-        """Função para rotulação de "metabase" para o MetaStream.
+    def _handle_predictions(self, list_predictions: List[dict], list_ytrue: List[List]):
+      df_lis = [pd.DataFrame(scores) for scores in list_predictions]
+      lis_scores_dict = [
+        df.apply(lambda y_pred: self.scorer(y_true=y_true, y_pred=y_pred)).to_dict()
+        for (df, y_true) in zip(df_lis, list_ytrue)
+      ]
+      lis_labels_performance = [
+        self.labelizer(dici, dist=self._counter_labels)
+        for dici in lis_scores_dict
+      ]
+      return lis_labels_performance, lis_scores_dict
 
-        Args:
-            metabase_initial_size ([type]): [description]
-            train ([type]): [description]
-            sel (int, optional): [description]. Defaults to 10.
-            verbose (int, optional): [description]. Defaults to 1.
-            retrain_interval (int, optional): [A cada `retrain_interval` amostras de teste, retreina os modelos-base. Note-se
-              que, embora não presente no MetaStream original, pode fazer sentido. Via de regra porém, convém configurar
-              `retrain_interval` = `test`].
-              Defaults to 10.
-
-        Returns:
-            [type]: [description]
-        """
-        if retrain_interval is None:
-            retrain_interval = test
-
-        # Para simplificar o código, retrain_interval mod sel = 0 e, claro, retrain_interval > sel
-        assert not retrain_interval % test and retrain_interval >= test
-
-        retrain_interval_original = retrain_interval
-        retrain_interval = 0  # Para treinar modelo na primeira vez
-
-        meta_y = []
-        eval_history = []
-        offset = 0
-        it = tqdm(range(metabase_initial_size)) if verbose else range(
-            metabase_initial_size)
-
-        x_train, y_train = (i.tolist() for i in stream.next_sample(train))
-        x_hor, y_hor = (i.tolist() for i in stream.next_sample(horizon))
-        for _ in it:
-            x_test, y_test = (i.tolist() for i in stream.next_sample(test))
-            offset += test
-            if retrain_interval <= 0:
-                retrain_interval = retrain_interval_original
-                for tup in self.base_models:
-                    tup.model.fit(x_train, y_train)
-
-            retrain_interval -= test
-            evals = {}
-            for tup in self.base_models:
-                y_pred = tup.model.predict(x_test)
-                evals[tup.name] = self.scorer(y_true=y_test, y_pred=y_pred)
-
-            eval_history.append(evals)
-            # 2.1 - Rotula metaexemplo
-            y_best_label, y_best_val = self.labelizer(evals, dist=self._counter_labels)
-            self._counter_labels[y_best_label] += 1
-            meta_y.append(y_best_label)
-
-            x = [*x_train, *x_hor, *x_test][test:]
-            y = [*y_train, *y_hor, *y_test][test:]
-
-            x_train, x_hor = x[:train], x[train:+train+horizon]
-            y_train, y_hor = y[:train], y[train:+train+horizon]
-
-        return meta_y, eval_history
 
     def _gen_metabase(self, stream: DataStream, metabase_initial_size, train, horizon, test=10,
-                      verbose=True, retrain_interval=None, labelize=True, **kwargs):
+                      gamma=0, verbose=True, retrain_interval=None, labelize=True, **kwargs):
+        if not gamma:
+          gamma = test
         s0 = stream.sample_idx
         # To count in the end how many samples were processed (used somehow)
 
@@ -122,16 +72,26 @@ class MetaStream(base.MStream):
             if not stream.has_more_samples():
               print("WARNING: consumed all stream")
               break
-            x_test, y_test = (i.tolist() for i in stream.next_sample(test))
+            x_test, y_test = stream.next_sample(test)
+            x_test = x_test.tolist()
+            
+            # x_test, y_test = (i.tolist() for i in stream.next_sample(test))
             dbg.append((x_train, x_hor, x_test, y_train, y_hor, y_test))
 
-            meta_features: dict = A.prefixify(
+            mtf_lis = []
+            test_chunks = [x_test[i:i+gamma] for i in range(0, len(x_test), gamma)]
+
+            base_mtf: dict = A.prefixify(
                 self.train_extractor(X=x_train, y=y_train), 'tr')
-            meta_features.update(A.prefixify(
+            base_mtf.update(A.prefixify(
                 self.horizon_extractor(x_hor), 'hor'))
-            meta_features.update(A.prefixify(
-                self.test_extractor(x_test), 'tes'))
-            meta_x.append(meta_features.copy())
+            for chunk in test_chunks:
+              meta_features = base_mtf.copy()
+              meta_features.update((
+                A.prefixify(self.test_extractor(chunk), 'tes')
+              ))
+              mtf_lis.append(meta_features)
+            meta_x.extend(mtf_lis)
 
             if labelize:
                 if retrain_interval <= 0:
@@ -142,16 +102,24 @@ class MetaStream(base.MStream):
 
                 retrain_interval -= test
 
-                evals = {}
-                for tup in self.base_models:
-                    y_pred = tup.model.predict(x_test)
-                    evals[tup.name] = self.scorer(y_true=y_test, y_pred=y_pred)
-
-                eval_history.append(evals)
-                # 2.1 - Rotula metaexemplo
-                y_best_label, y_best_val = self.labelizer(evals, dist=self._counter_labels)
-                self._counter_labels[y_best_label] += 1
-                meta_y.append(y_best_label)
+                slices_idx, _ = A.SlidingWindow(n=int (np.ceil(test/gamma)), train=gamma, 
+                                  test=0, gap=0, step=gamma)
+                slices_idx = slices_idx.tolist()
+                # Not exact division requires cutting extra indices
+                if test % gamma:
+                  slices_idx[-1] = slices_idx[-1][:test%gamma]
+                predictions = [tup.model.predict(x_test) for tup in self.base_models ]
+                predictions = [
+                  {
+                    tup.name: pred[slc]
+                    for (tup, pred) in zip(self.base_models, predictions) }
+                  for slc in slices_idx
+                ]
+                correct_lis = [y_test[slc] for slc in slices_idx]                
+                eval_best_lis, eval_lis = self._handle_predictions(predictions, correct_lis, )                          
+                eval_history.extend(eval_lis)
+                y_best_lis, y_score_lis = A.lzip(*eval_best_lis)
+                meta_y.extend(y_best_lis)
 
             x = [*x_train, *x_hor, *x_test][test:]
             y = [*y_train, *y_hor, *y_test][test:]
@@ -170,14 +138,14 @@ class MetaStream(base.MStream):
         return meta_x, meta_y, eval_history, stream.sample_idx - s0
 
 
-    def predict(self, X, sel=None, to_cache=True, verbose=False,):
-      if verbose: print('Single' if not sel else f"Multi with sel={sel}")
-      if not sel:
-        sel = len(X)
+    def predict(self, X, gamma=None, to_cache=True, verbose=False,):
+      if verbose: print('Single' if not gamma else f"Multi with gamma={gamma}")
+      if not gamma:
+        gamma = len(X)
       if to_cache:
         self._cache_predict_multi.clear()
 
-      X_chunks = [X[i:i+sel] for i in range(0, len(X), sel)]
+      X_chunks = [X[i:i+gamma] for i in range(0, len(X), gamma)]
       if verbose: print(f'n_chunks: {len(X_chunks)}')
       mtf_lis = []
       for x in X_chunks:
@@ -209,7 +177,7 @@ class MetaStream(base.MStream):
         return meta_features, evals
       
 
-    def update_stream(self, X, y, sel=None, use_cache=True, verbose=False, base_retrain=False):
+    def update_stream(self, X, y, gamma=None, use_cache=True, verbose=False, ):
         """Update internal object state.
 
         This method should be called right after "predict" when "metastream"
@@ -222,18 +190,13 @@ class MetaStream(base.MStream):
         This method basically updates the metabase and possibly [/optionally]
         other internal attributes like evaluation history.
         """
-        if verbose: print('Multi update' if sel else 'Single update')
+        if verbose: print('Multi update' if gamma else 'Single update')
 
-        if not sel:
-          sel = len(X)
-        lis_x = [X[i:i+sel] for i in range(0, len(X), sel)]
-        lis_y = [y[i:i+sel] for i in range(0, len(y), sel)]
+        if not gamma:
+          gamma = len(X)
+        lis_x = [X[i:i+gamma] for i in range(0, len(X), gamma)]
+        lis_y = [y[i:i+gamma] for i in range(0, len(y), gamma)]
         # Carrega features [supervisionadas/do horizon] extraídas no último predict
-        if base_retrain:
-          if verbose:  print(f"[update_stream] Treinamento base")
-          for tup in self.base_models:
-            tup.model.fit(self.next_x_train, self.next_y_train)
-          self.base_models_retrain += 1
 
         mtf_and_evals_lis = [
           self._compute_mtf_and_eval(xx, yy, use_cache=use_cache, )

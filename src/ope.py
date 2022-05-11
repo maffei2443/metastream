@@ -1,18 +1,16 @@
-
 import numpy as np
 import pandas as pd
 from sklearn.base import RegressorMixin, TransformerMixin
 from typing import Union
-from sklearn.utils import Bunch
+# from importlib import reload as rl
 
-class MissingLabels(Exception):
-    pass
 
 class OnlinePerformanceEstimation(RegressorMixin, TransformerMixin):
     def __init__(self, base_models, loss_function, verbose=False):
         self.base_models = base_models
         self.loss_function = loss_function
         self.verbose = verbose
+        # self._window_x = None  # Apenas para depuração
         self._window_y = None
         self._is_fit = False
         self._predicts = None
@@ -44,6 +42,7 @@ class OnlinePerformanceEstimation(RegressorMixin, TransformerMixin):
       Returns:
           [type]: [description]
       """
+      # self._window_x = X
       self._window_y = y.copy()
       self._is_fit = True
       self._y_preds = [m.model.predict(X) for m in self.base_models]
@@ -57,6 +56,7 @@ class OnlinePerformanceEstimation(RegressorMixin, TransformerMixin):
     def update(self, X, y):
       sx, sy = len(X), len(y)
       assert sx == sy
+      # self._window_x = [*self._window_x, *X ][sx:]
       self._window_y = [*self._window_y, *y ][sy:]
       self._y_preds = [[*old_pred, *m.model.predict(X)][sx:]
                      for (old_pred, m) in zip(self._y_preds, self.base_models)]      
@@ -78,32 +78,3 @@ class OnlinePerformanceEstimation(RegressorMixin, TransformerMixin):
         print("[WARNING] X is not used")
       return self._scores
 
-
-
-if __name__ == '__main__':
-  import pandas as pd
-
-  df = pd.read_csv('../csv/elec2.csv').iloc[:10_000]
-  X, y = df.iloc[:, :-1].values, df.iloc[:, -1].values
-  from sklearn.linear_model import LogisticRegression
-  from sklearn.svm import LinearSVC
-  from sklearn.metrics import accuracy_score
-  models = [
-      LinearSVC(),
-      LogisticRegression(),
-  ]
-  base_models = [
-    Bunch(name='nys_svc', model=models[0]),
-    Bunch(name='rf', model=models[1]),
-  ]
-  xtrain, xtest, ytrain, ytest = [*np.split(X, [5000]), *np.split(y, [5000])]
-  
-  for m in base_models:
-      m.model.fit(xtrain, ytrain)
-  
-  poe = OnlinePerformanceEstimation(base_models, loss_function=accuracy_score, )
-  poe.fit(xtrain, ytrain);
-  print("preds: ", poe.predict())
-  print("true : ")
-  for (idx, m) in enumerate(base_models):
-    print('\t{}: {}'.format(m.name, accuracy_score(ytest, m.model.predict(xtest))))

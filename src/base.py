@@ -1,35 +1,8 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-import time
-
-import functools as F
 import pandas as pd
-import numpy as np
-import warnings
 from collections import Counter
-from tqdm import tqdm
-from sklearn.model_selection import RandomizedSearchCV
 
-
-# In[2]:
-
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import RandomizedSearchCV
-from scipy.stats import uniform
 from sklearn.metrics import mean_squared_error
-from typing import Tuple
-from sklearn.utils import Bunch
-
-from sklearn.ensemble import RandomForestClassifier as RFC
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
-from pymfe.mfe import MFE
 from sklearn.base import ClassifierMixin, BaseEstimator
-
 from skmultiflow.data import DataStream
 import src.aux as A
 import abc
@@ -114,7 +87,7 @@ class MStream(BaseEstimator, ClassifierMixin):
       self._counter_labels = Counter()
       self._processed_online = 0
           
-    def fit(self, X, Y, meta_window=40, train=300, horizon=0, test=10, 
+    def fit(self, X, Y, meta_window=40, train=300, horizon=0, test=10, gamma=0,
           metabase_initial_size=40, skip_tune=False, retrain_interval=None, verbose=False,
         ):
         self.reset()
@@ -123,7 +96,7 @@ class MStream(BaseEstimator, ClassifierMixin):
             [], [], [],
         )
 
-        # 0 - assume-se que X e y são numpy arrays
+        # 0 - X and y assumed to be numpy arrays
         # 1 - Tune
         if not skip_tune:
           # datasize = train * metabase_initial_size // test
@@ -135,11 +108,11 @@ class MStream(BaseEstimator, ClassifierMixin):
           print("SKIPPED TUNE")      
         
         # 2 - Generate initial metabase
-        print("Gerando metabase inicial...")
+        if verbose: print("Genrating initial metabase...")
         stream = DataStream(X, Y,  allow_nan=True, )
         self.meta_x, self.meta_y, self._base_evals, self._processed = self._gen_metabase(
               stream, metabase_initial_size, train=train, horizon=horizon, 
-              test=test, verbose=verbose, 
+              test=test, gamma=gamma, verbose=verbose, 
               retrain_interval=retrain_interval,
         )
         self.current_stream = stream
@@ -149,14 +122,12 @@ class MStream(BaseEstimator, ClassifierMixin):
         self.cached_metafeatures.update(A.prefixify(
           self.horizon_extractor(self.next_x_horizon), 'hor'
         ))
+        if verbose: print('Training models on most updated data...')
+        for tup in self.base_models:
+          tup.model.fit(self.next_x_train, self.next_y_train)
 
-        # # Treinar modelos nos últimos dados de treinos disponíveis só
-        # deve ser feito na etapa de atualizar a metabase
-        
-        print(f'finalizou após processar {self._processed} amostras')
-        # Salva metacaracteristicas supervisionadas, às quais serão adicionadas medidas NÃO-supervisionadas
-        # para que as predições sejam feitas.
-        
+        print(f'Finished processing {self._processed} samples')
+
         self.meta_model.fit(
           pd.DataFrame(self.meta_x[-meta_window:]), 
           pd.Series(self.meta_y[-meta_window:])
@@ -189,9 +160,9 @@ class MStream(BaseEstimator, ClassifierMixin):
 
     @abc.abstractmethod
     def predict(self, X, X_horizon=[], verbose=False, to_cache=False):
-        """Prediz qual melhor algoritmo atuar nos dados imediatamente vindouros.
-        
-        X: matriz com atributos a serem enviados para o extrator não-supervisionado
+        """Predicts best best algorithm X.
+
+        X: attribute matrix to be used to unsupervised feature extraction
         """
         raise NotImplementedError(f"`predict` not implemented by {type(self)}")
 

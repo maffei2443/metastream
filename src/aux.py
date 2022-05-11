@@ -268,7 +268,7 @@ def plot_pie(lis, **kwargs,):
     aux = plt
     if kwargs.get('ax'):
         aux = kwargs.pop('ax')
-    aux.pie(labels,  labels=values, **kwargs)
+    return aux.pie(labels,  labels=values, **kwargs)
 
 
 def lzip(*x):
